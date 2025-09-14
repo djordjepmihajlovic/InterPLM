@@ -13,6 +13,7 @@ Usage:
 """
 
 import logging
+from math import ceil
 import re
 from collections import defaultdict
 from pathlib import Path
@@ -173,7 +174,7 @@ def shard_protein_data(
     n_shards: int,
 ) -> None:
     """Split preprocessed data into shards for parallel processing."""
-    shard_size = len(df) // n_shards
+    shard_size = ceil(len(df) / n_shards)
     for i in range(0, len(df), shard_size):
         shard_id = i // shard_size
         df_shard = df.iloc[i : min(i + shard_size, len(df))].reset_index(drop=True)
