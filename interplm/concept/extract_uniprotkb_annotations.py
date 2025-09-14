@@ -22,6 +22,7 @@ import numpy as np
 import pandas as pd
 from scipy import sparse
 from tap import tapify
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 from interplm.concept.uniprotkb_concept_constants import (
     aa_map,
@@ -251,6 +252,7 @@ def main(
     min_required_instances: int = 100,
     min_protein_length: int = 1022,
     overwrite: bool = False,
+    max_workers: int = None,  # None means use all available CPU cores
 ):
     """
     Process UniProt protein data into a machine learning-ready format.
@@ -275,17 +277,31 @@ def main(
     # Dynamically determine which sub-categories are abundant enough to include
     categorical_options = enumerate_protein_subcategories(df, min_required_instances)
 
-    # Process each shard
-    for shard in range(n_shards):
-        convert_shard_to_amino_acid_features(
-            shard_id=shard,
-            input_path=output_dir / f"shard_{shard}" / "protein_data.tsv",
-            output_dir=output_dir,
-            categorical_options=categorical_options,
-            binary_cols=binary_meta_cols,
-            interaction_cols=paired_binary_cols,
-            overwrite=overwrite,
-        )
+    # Process shards in parallel using ProcessPoolExecutor
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        # Submit all tasks
+        future_to_shard = {
+            executor.submit(
+                convert_shard_to_amino_acid_features,
+                shard_id=shard,
+                input_path=output_dir / f"shard_{shard}" / "protein_data.tsv",
+                output_dir=output_dir,
+                categorical_options=categorical_options,
+                binary_cols=binary_meta_cols,
+                interaction_cols=paired_binary_cols,
+                overwrite=overwrite,
+            ): shard
+            for shard in range(n_shards)
+        }
+
+        # Process results as they complete
+        for future in as_completed(future_to_shard):
+            shard = future_to_shard[future]
+            try:
+                future.result()  # This will raise any exceptions that occurred
+                logger.info(f"Successfully completed processing shard {shard}")
+            except Exception as e:
+                logger.error(f"Shard {shard} generated an exception: {e}")
 
     logger.info("UniProt data processing complete!")
 
