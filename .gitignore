@@ -2,6 +2,10 @@
 data/cif/*
 data/dssp/*
 data/pdbs/*
+
+# Models
+models/
+*.png
 *.fasta
 *.dat
 *.json
@@ -20,6 +24,16 @@ data/pdbs/*
 *.npz
 *.txt
 *.gz
+*.yaml
+*.wandb
+dms*
+*.cif
+*latest-run*
+*.full
+*.DS_Store
+*analysis/*
+*/data/*
+
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

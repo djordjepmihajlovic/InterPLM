@@ -91,6 +91,26 @@ def select_color_range(values, feature: int | None = None) -> Tuple[int, int, in
     return min_value, median_value, top_value
 
 
+def default_cyan_to_magenta_colormap(value: float) -> str:
+    """
+    Default colormap function that scales from cyan to magenta between 0 and 1.
+    
+    Args:
+        value: Float value between 0 and 1
+        
+    Returns:
+        Hex color string interpolated between cyan and magenta
+    """
+    # Clamp value between 0 and 1
+    t = max(0.0, min(1.0, value))
+    
+    # Cyan: #00FFFF, Magenta: #FF00FF
+    cyan = "#00FFFF"
+    magenta = "#FF00FF"
+    
+    return interpolate_color(cyan, magenta, t)
+
+
 def get_structure_palette_and_colormap(color_range):
     cyan, white, magenta = "#00DDFF", "#FFFFFF", "#cc39ca"
     structure_color_pallete, structure_color_range = generate_discrete_palette(

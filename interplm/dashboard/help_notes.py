@@ -31,7 +31,7 @@ help_note_lists = {"metrics":
                                           ],
                    "overall": [
                        "This dashboard helps explore features extracted from the protein language model ESM-2-8M via Sparse Autoencoders (SAEs). ",
-                       "Details on training, analysis, and visualizations in the [InterPLM paper](https://www.biorxiv.org/content/10.1101/2024.11.14.623630v1)."
+                       "Details on training, analysis, and visualizations in the [InterPLM paper](https://www.nature.com/articles/s41592-025-02836-7)."
                    ],
                    "select_esm_layer": ["Each ESM layer has 10,240 features extracted by the SAE. Select a specific layer and any ",
                                         "one of the features (or get a random feature) to start exploring! When selecting ",

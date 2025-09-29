@@ -274,6 +274,7 @@ def plot_activation_scatter(
             marker=dict(
                 size=5,
                 color=marker_color,
+                opacity=0.3,
                 line=dict(width=0, color="DarkSlateGrey"),
             ),
             text=[

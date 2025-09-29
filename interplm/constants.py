@@ -1,11 +1,19 @@
+"""Constants and configuration for InterPLM."""
+
 import os
 from pathlib import Path
 
-DATA_DIR = Path(os.environ.get("INTERPLM_DATA", Path(__file__).parent.parent / "data"))
-TRAINED_MODELS_DIR = Path(__file__).parent.parent / "models"
-PDB_DIR = Path(os.environ.get("INTERPLM_PDB", DATA_DIR / "pdb_files"))
+# Base directory for InterPLM data (can be overridden by environment variable)
+DATA_DIR = Path(os.environ.get("INTERPLM_DATA", Path.home() / "interplm_data"))
 
-DASHBOARD_CACHE_DIR = DATA_DIR / "dashboard_cache"
-DASHBOARD_CACHE = Path(
-    os.environ.get("DASHBOARD_CACHE", DASHBOARD_CACHE_DIR / "dashboard_cache_650M.pkl")
-)
+# Standard amino acids (canonical 20)
+AMINO_ACIDS = "ACDEFGHIKLMNPQRSTVWY"
+AMINO_ACID_LIST = list(AMINO_ACIDS)
+AMINO_ACID_TO_IDX = {aa: i for i, aa in enumerate(AMINO_ACIDS)}
+IDX_TO_AMINO_ACID = {i: aa for i, aa in enumerate(AMINO_ACIDS)}
+
+# Create directories if they don't exist
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+# PDB directory for structure files
+PDB_DIR = Path(os.environ.get('INTERPLM_DATA', '.')) / 'pdb'

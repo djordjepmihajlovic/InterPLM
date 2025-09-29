@@ -28,15 +28,18 @@ def get_esm_submodule_and_access_method(nnsight_model: NNsight, hidden_layer_idx
         return nnsight_model.esm.encoder.layer[hidden_layer_idx], "input"
 
 
-def get_model_output(esm_model: EsmForMaskedLM, nnsight_model: NNsight,
-                     batch_tokens: torch.Tensor, batch_attn_mask: torch.Tensor,
-                     hidden_layer_idx: int, hidden_state_override: torch.Tensor | None = None):
+def get_esm_output_with_intervention(
+    esm_model: EsmForMaskedLM,
+    nnsight_model: NNsight,
+    batch_tokens: torch.Tensor,
+    batch_attn_mask: torch.Tensor,
+    hidden_layer_idx: int,
+    hidden_state_override: torch.Tensor | None = None,
+):
     """Get model output with optional hidden state modification."""
     with torch.no_grad():
         orig_output = esm_model(
-            batch_tokens,
-            attention_mask=batch_attn_mask,
-            output_hidden_states=True
+            batch_tokens, attention_mask=batch_attn_mask, output_hidden_states=True
         )
 
         if hidden_state_override is None:
@@ -46,9 +49,14 @@ def get_model_output(esm_model: EsmForMaskedLM, nnsight_model: NNsight,
             nnsight_model, hidden_layer_idx
         )
 
-        with nnsight_model.trace(batch_tokens, attention_mask=batch_attn_mask) as tracer:
-            embd_to_patch = (submodule.input[0][0] if input_or_output == "input"
-                             else submodule.output)
+        with nnsight_model.trace(
+            batch_tokens, attention_mask=batch_attn_mask
+        ) as tracer:
+            embd_to_patch = (
+                submodule.input[0][0]
+                if input_or_output == "input"
+                else submodule.output
+            )
             embd_to_patch[:] = hidden_state_override
             modified_logits = nnsight_model.output.save()
 

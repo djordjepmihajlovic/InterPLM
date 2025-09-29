@@ -2,6 +2,6 @@ from setuptools import find_packages, setup
 
 setup(
     name="interplm",
-    version="0.1",
+    version="1.0.0",
     packages=find_packages(),
 )

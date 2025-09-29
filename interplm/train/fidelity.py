@@ -7,80 +7,43 @@ Calculate the loss (cross entropy) fidelity metric for a Sparse Autoencoder (SAE
    the loss recovered metric.
 """
 
+from dataclasses import dataclass
+
 import numpy as np
 import torch
 import torch.nn.functional as F
+import yaml
 from esm import pretrained
 from nnsight import NNsight
 from tqdm import tqdm
 from transformers import EsmForMaskedLM
 
-from interplm.esm.embed import shuffle_individual_parameters
-from interplm.sae.intervention import get_model_output
+# from interplm.esm.embed import shuffle_individual_parameters  # Not available in public repo
+from interplm.sae.intervention import get_esm_output_with_intervention
+from interplm.train.evaluation import EvaluationConfig, EvaluationManager
+from interplm.utils import get_device
 
 
-def CE_for_orig_and_zero_ablation(
-    esm_model, nnsight_model, tokenized_batches, hidden_layer_idx, device
-):
-    """Calculate cross entropy for original and zero-ablated outputs."""
-    orig_losses, zero_losses = [], []
+@dataclass
+class ESMFidelityConfig(EvaluationConfig):
+    model_name: str | None = None
+    layer_idx: int | None = None
+    corrupt: bool = False
 
-    for batch_tokens, batch_attn_mask in tqdm(tokenized_batches):
-        batch_tokens = batch_tokens.to(device)
-        batch_attn_mask = batch_attn_mask.to(device)
-
-        orig_logits, orig_hidden = get_model_output(
-            esm_model, nnsight_model, batch_tokens, batch_attn_mask, hidden_layer_idx
-        )
-
-        zero_logits, _ = get_model_output(
-            esm_model,
-            nnsight_model,
-            batch_tokens,
-            batch_attn_mask,
-            hidden_layer_idx,
-            torch.zeros_like(orig_hidden),
-        )
-
-        orig_losses.extend(
-            calculate_cross_entropy(orig_logits, batch_tokens, batch_attn_mask)
-        )
-        zero_losses.extend(
-            calculate_cross_entropy(zero_logits, batch_tokens, batch_attn_mask)
-        )
-
-    return np.mean(orig_losses), np.mean(zero_losses)
+    def build(self) -> "ESMFidelityFunction":
+        return ESMFidelityFunction(self)
 
 
-def CE_from_sae_recon(
-    esm_model, nnsight_model, tokenized_batches, hidden_layer_idx, sae_model, device
-):
-    """Calculate cross entropy using SAE reconstructions."""
-    sae_losses = []
-
-    for batch_tokens, batch_attn_mask in tokenized_batches:
-        batch_tokens = batch_tokens.to(device)
-        batch_attn_mask = batch_attn_mask.to(device)
-
-        _, orig_hidden = get_model_output(
-            esm_model, nnsight_model, batch_tokens, batch_attn_mask, hidden_layer_idx
-        )
-
-        reconstructions = sae_model(orig_hidden)
-        sae_logits, _ = get_model_output(
-            esm_model,
-            nnsight_model,
-            batch_tokens,
-            batch_attn_mask,
-            hidden_layer_idx,
-            reconstructions,
-        )
-
-        sae_losses.extend(
-            calculate_cross_entropy(sae_logits, batch_tokens, batch_attn_mask)
-        )
-
-    return np.mean(sae_losses)
+def calculate_cross_entropy(model_output, batch_tokens, batch_attn_mask):
+    """Calculate cross entropy for each sequence in batch, excluding start/end tokens."""
+    losses = []
+    for j, mask in enumerate(batch_attn_mask):
+        length = mask.sum()
+        seq_logits = model_output[j, 1 : length - 1]
+        seq_tokens = batch_tokens[j, 1 : length - 1]
+        loss = F.cross_entropy(seq_logits, seq_tokens)
+        losses.append(loss.item())
+    return losses
 
 
 def calculate_loss_recovered(ce_autoencoder, ce_identity, ce_zero_ablation):
@@ -116,79 +79,135 @@ def calculate_loss_recovered(ce_autoencoder, ce_identity, ce_zero_ablation):
     return loss_recovered * 100
 
 
-def get_loss_recovery_fn(
-    esm_model_name: str,
-    layer_idx: int,
-    eval_seq_path: str,
-    device: str,
-    batch_size: int = 8,
-    corrupt: bool = False,
-) -> callable:
-    print("Prepping loss fidelity_fn")
-    # Load the ESM model and alphabet
-    _, alphabet = pretrained.load_model_and_alphabet(esm_model_name)
-    model = EsmForMaskedLM.from_pretrained(f"facebook/{esm_model_name}").to(device)
+class ESMFidelityFunction(EvaluationManager):
+    def __init__(
+        self,
+        eval_config: "ESMFidelityConfig",
+    ):
+        # The super class just sets the config
+        super().__init__(eval_config)
 
-    if corrupt:
-        model = shuffle_individual_parameters(model)
+        print("Prepping loss fidelity_fn")
+        self.device = get_device()
 
-    batch_converter = alphabet.get_batch_converter()
+        # Extract config values
+        self.model_name = eval_config.model_name
+        self.eval_seq_path = eval_config.eval_seq_path
+        self.layer_idx = eval_config.layer_idx
+        self.batch_size = eval_config.eval_batch_size or 8
+        self.corrupt = eval_config.corrupt
 
-    # Load evaluation sequences
-    with open(eval_seq_path, "r") as f:
-        eval_seqs = [line.strip() for line in f]
-
-    # Prepare data in the format expected by the batch converter
-    data = [(f"protein{i}", seq) for i, seq in enumerate(eval_seqs)]
-
-    # Pre-tokenize and create batches
-    tokenized_batches = []
-    for i in range(0, len(data), batch_size):
-        batch_data = data[i : i + batch_size]
-        _, _, batch_tokens = batch_converter(batch_data)
-        batch_mask = (batch_tokens != alphabet.padding_idx).to(int)
-        tokenized_batches.append((batch_tokens, batch_mask))
-
-    nnsight_model = NNsight(model, device=device)
-
-    orig_loss, zero_loss = CE_for_orig_and_zero_ablation(
-        esm_model=model,
-        nnsight_model=nnsight_model,
-        tokenized_batches=tokenized_batches,
-        hidden_layer_idx=layer_idx,
-        device=device,
-    )
-
-    print("Finished preparing loss fidelity_fn")
-
-    def loss_recovery_fn(sae_model) -> dict:
-        sae_loss = CE_from_sae_recon(
-            esm_model=model,
-            sae_model=sae_model,
-            nnsight_model=nnsight_model,
-            tokenized_batches=tokenized_batches,
-            hidden_layer_idx=layer_idx,
-            device=device,
+        # Load the ESM model and alphabet
+        _, alphabet = pretrained.load_model_and_alphabet(self.model_name)
+        self.model = EsmForMaskedLM.from_pretrained(f"facebook/{self.model_name}").to(
+            self.device
         )
+
+        if self.corrupt:
+            raise NotImplementedError(
+                "The 'corrupt' parameter requires shuffle_individual_parameters() "
+                "which is not available in the public repo"
+            )
+
+        batch_converter = alphabet.get_batch_converter()
+
+        # Load evaluation sequences
+        with open(self.eval_seq_path, "r") as f:
+            eval_seqs = [line.strip() for line in f]
+
+        # Prepare data in the format expected by the batch converter
+        data = [(f"protein{i}", seq) for i, seq in enumerate(eval_seqs)]
+
+        # Pre-tokenize and create batches
+        self.tokenized_batches = []
+        for i in range(0, len(data), self.batch_size):
+            batch_data = data[i : i + self.batch_size]
+            _, _, batch_tokens = batch_converter(batch_data)
+            batch_mask = (batch_tokens != alphabet.padding_idx).to(int)
+            self.tokenized_batches.append((batch_tokens, batch_mask))
+
+        self.nnsight_model = NNsight(self.model, device=self.device)
+        self.layer_idx = self.layer_idx
+
+        self.orig_loss, self.zero_loss = self._CE_for_orig_and_zero_ablation(
+            self.tokenized_batches
+        )
+        print("Finished initializing ESM Fidelity Function")
+
+    def _calculate_fidelity(self, sae_model) -> dict:
+        sae_loss = self._CE_from_sae_recon(self.tokenized_batches, sae_model)
 
         loss_recovered = calculate_loss_recovered(
-            ce_autoencoder=sae_loss, ce_identity=orig_loss, ce_zero_ablation=zero_loss
+            ce_autoencoder=sae_loss,
+            ce_identity=self.orig_loss,
+            ce_zero_ablation=self.zero_loss,
         )
-
-        print(f"Orig {orig_loss}, Zero {zero_loss}, SAE {sae_loss}")
 
         return {"pct_loss_recovered": loss_recovered, "CE_w_sae_patching": sae_loss}
 
-    return loss_recovery_fn
+    def _CE_for_orig_and_zero_ablation(self, tokenized_batches):
+        """Calculate cross entropy for original and zero-ablated outputs."""
+        orig_losses, zero_losses = [], []
 
+        for batch_tokens, batch_attn_mask in tqdm(tokenized_batches):
+            batch_tokens = batch_tokens.to(self.device)
+            batch_attn_mask = batch_attn_mask.to(self.device)
 
-def calculate_cross_entropy(model_output, batch_tokens, batch_attn_mask):
-    """Calculate cross entropy for each sequence in batch, excluding start/end tokens."""
-    losses = []
-    for j, mask in enumerate(batch_attn_mask):
-        length = mask.sum()
-        seq_logits = model_output[j, 1 : length - 1]
-        seq_tokens = batch_tokens[j, 1 : length - 1]
-        loss = F.cross_entropy(seq_logits, seq_tokens)
-        losses.append(loss.item())
-    return losses
+            orig_logits, orig_hidden = get_esm_output_with_intervention(
+                self.model,
+                self.nnsight_model,
+                batch_tokens,
+                batch_attn_mask,
+                self.layer_idx,
+            )
+
+            zero_logits, _ = get_esm_output_with_intervention(
+                self.model,
+                self.nnsight_model,
+                batch_tokens,
+                batch_attn_mask,
+                self.layer_idx,
+                torch.zeros_like(orig_hidden),
+            )
+
+            orig_losses.extend(
+                calculate_cross_entropy(orig_logits, batch_tokens, batch_attn_mask)
+            )
+            zero_losses.extend(
+                calculate_cross_entropy(zero_logits, batch_tokens, batch_attn_mask)
+            )
+
+        return np.mean(orig_losses), np.mean(zero_losses)
+
+    def _CE_from_sae_recon(self, tokenized_batches, sae_model):
+        """Calculate cross entropy using SAE reconstructions."""
+        sae_losses = []
+
+        for batch_tokens, batch_attn_mask in tokenized_batches:
+            batch_tokens = batch_tokens.to(self.device)
+            batch_attn_mask = batch_attn_mask.to(self.device)
+
+            _, orig_hidden = get_esm_output_with_intervention(
+                self.model,
+                self.nnsight_model,
+                batch_tokens,
+                batch_attn_mask,
+                self.layer_idx,
+            )
+
+            # Get reconstructions with unnormalize=True for injection into the model
+            reconstructions = sae_model(orig_hidden, unnormalize=True)
+            sae_logits, _ = get_esm_output_with_intervention(
+                self.model,
+                self.nnsight_model,
+                batch_tokens,
+                batch_attn_mask,
+                self.layer_idx,
+                reconstructions,
+            )
+
+            sae_losses.extend(
+                calculate_cross_entropy(sae_logits, batch_tokens, batch_attn_mask)
+            )
+
+        return np.mean(sae_losses)

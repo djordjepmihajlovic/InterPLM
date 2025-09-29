@@ -7,6 +7,7 @@ feature is 1 across the provided dataset.
 from pathlib import Path
 from typing import Optional
 
+from interplm.sae.dictionary import BatchTopKSAE
 import numpy as np
 import torch
 
@@ -16,12 +17,15 @@ from interplm.sae.inference import (
     split_up_feature_list,
 )
 from interplm.utils import get_device
-
+from interplm.data_processing.embedding_loader import (
+    ShardDataLoader,
+    detect_and_create_loader
+)
 
 def calculate_feature_statistics(
     sae: torch.nn.Module,
-    esm_embds_dir: Path,
-    n_shards: int | None = None,
+    data_loader: ShardDataLoader,
+    n_shards: Optional[int] = None,
     max_features_per_chunk: int = 640,
     max_tokens_per_chunk: int = 25_000,
 ) -> torch.Tensor:
@@ -30,8 +34,8 @@ def calculate_feature_statistics(
 
     Args:
         sae: Sparse autoencoder model
-        esm_embds_dir: Directory containing ESM embeddings
-        n_shards: Number of data shards to process
+        data_loader: ShardDataLoader instance for loading data
+        n_shards: Number of data shards to process (None = process all)
         max_features_per_chunk: Maximum features to process at once
         max_tokens_per_chunk: Maximum tokens to process in one batch
 
@@ -42,14 +46,21 @@ def calculate_feature_statistics(
     num_features = sae.dict_size
     max_per_feat = torch.zeros(num_features, device=device)
 
-    if n_shards is None:
-        n_shards = len(list(esm_embds_dir.glob("shard_*.pt")))
+    # Get the shard indices to process from the dataloader
+    shard_indices = data_loader.get_shard_indices(n_shards)
+    
+    # binary mask of features that have been non-zero at least once
+    is_feature_ever_nonzero = torch.zeros(num_features, device=device)
 
-    for shard in range(n_shards):
+    for i, shard_idx in enumerate(shard_indices):
+        print(f"Processing shard {shard_idx} ({i+1}/{len(shard_indices)})")
+        
         # Load embeddings for current shard
-        shard_path = esm_embds_dir / f"shard_{shard}.pt"
-        esm_acts = torch.load(shard_path, map_location=device, weights_only=True)
+        esm_acts = data_loader.load_shard(shard_idx)
 
+        n_features_processed = 0
+        n_features_with_max_value_of_0 = 0
+        
         # Process features in chunks to manage memory
         for feature_list in split_up_feature_list(
             total_features=num_features, max_feature_chunk_size=max_features_per_chunk
@@ -58,10 +69,18 @@ def calculate_feature_statistics(
             sae_feats = get_sae_feats_in_batches(
                 sae=sae,
                 device=device,
-                esm_embds=esm_acts,
+                aa_embds=esm_acts,
                 chunk_size=max_tokens_per_chunk,
                 feat_list=feature_list,
             )
+
+            # print the number of features that have max value of 0
+            n_features_with_max_value_of_0 += sum(torch.max(sae_feats, dim=0)[0] == 0)
+            n_features_processed += len(feature_list)
+
+            is_feature_ever_nonzero[feature_list] = torch.logical_or(
+                is_feature_ever_nonzero[feature_list], (sae_feats > 0).any(dim=0)
+            ).to(torch.float)
 
             # Update maximum values for current feature subset
             max_per_feat[feature_list] = torch.max(
@@ -72,6 +91,16 @@ def calculate_feature_statistics(
             del sae_feats
             torch.cuda.empty_cache()
 
+        print(
+            f"  Shard {shard_idx}: {n_features_with_max_value_of_0}/{n_features_processed} "
+            f"features with max value of 0"
+        )
+
+    # Final statistics
+    print(f"\nFinal statistics:")
+    print(f"  Features with max value of 0: {sum(max_per_feat == 0)}")
+    print(f"  Features that were non-zero at least once: {sum(is_feature_ever_nonzero)}")
+
     return max_per_feat
 
 
@@ -80,65 +109,76 @@ def create_normalized_model(
 ) -> torch.nn.Module:
     """
     Create a normalized version of the SAE model based on maximum feature values.
+    
+    This stores normalization factors in the model's activation_rescale_factor buffer
+    rather than modifying weights directly. This ensures consistency across all SAE types
+    and allows the normalization to be applied post-ReLU during inference.
 
     Args:
         sae: Original SAE model
         max_per_feat: Maximum activation values per feature
 
     Returns:
-        Normalized copy of the SAE model
+        SAE model with normalization factors stored
     """
-
-    with torch.no_grad():
-        # Normalize encoder weights and bias
-        sae.encoder.weight.div_(max_per_feat.unsqueeze(1))
-
-        # Replace any inf values introduced by division by 0
-        sae.encoder.weight[sae.encoder.weight.isinf()] = 0
-
-        if sae.encoder.bias is not None:
-            sae.encoder.bias.div_(max_per_feat)
-
-            # Replace any inf values introduced by division by 0
-            sae.encoder.bias[sae.encoder.bias.isinf()] = 0
-
-        # Adjust decoder weights to maintain reconstruction
-        sae.decoder.weight.mul_(max_per_feat.unsqueeze(0))
-
+    # Store normalization factors in the model's buffer
+    # All Dictionary subclasses have this buffer initialized to ones
+    if hasattr(sae, 'activation_rescale_factor'):
+        sae.activation_rescale_factor = max_per_feat
+    else:
+        # Register the buffer if it doesn't exist (shouldn't happen with proper Dictionary subclass)
+        sae.register_buffer("activation_rescale_factor", max_per_feat)
+    
     return sae
 
 
 def normalize_sae_features(
-    sae_dir: Path, esm_embds_dir: Path, n_shards: Optional[int] = 1
+    sae_dir: Path, 
+    aa_embds_dir: Path, 
+    n_shards: Optional[int] = None,
+    data_loader: Optional[ShardDataLoader] = None,
+    loader_type: Optional[str] = None,
+    nested_filename: Optional[str] = None,
 ) -> None:
     """
     Calculate feature statistics and create a normalized version of the SAE model.
 
     Args:
         sae_dir: Directory containing SAE model
-        esm_embds_dir: Directory containing ESM embeddings
-        n_shards: Number of data shards to process
+        aa_embds_dir: Directory containing ESM embeddings
+        n_shards: Number of data shards to process (None = all)
+        data_loader: Optional pre-configured ShardDataLoader instance
+        loader_type: Optional loader type ("flat" or "nested") to force specific loader
+        nested_filename: Optional filename for nested loader (default: "activations.pt")
     """
     # Setup paths
-    ckpt_path = sae_dir / "ae.pt"
     feat_stat_cache = sae_dir / "feature_stats"
-    norm_sae_path = ckpt_path.parent / f"{ckpt_path.stem}_normalized.pt"
+    norm_sae_path = sae_dir / f"ae_normalized.pt"
 
     # Create cache directory
     feat_stat_cache.mkdir(parents=True, exist_ok=True)
 
+    # Create or configure data loader
+    if data_loader is None:
+        # Auto-detect is the only option now since loader classes are in embedding_loader module
+        data_loader = detect_and_create_loader(aa_embds_dir)
+
     # Load model and calculate statistics
     print("Loading SAE model and calculating feature statistics...")
-    sae = load_sae(ckpt_path)
+    sae = load_sae(sae_dir)
     max_per_feat = calculate_feature_statistics(
-        sae=sae, esm_embds_dir=esm_embds_dir, n_shards=n_shards
+        sae=sae, 
+        data_loader=data_loader, 
+        n_shards=n_shards
     )
 
     # Save statistics
     np.save(feat_stat_cache / "max.npy", max_per_feat.cpu().numpy())
 
-    print("Creating normalized SAE model...")
+    print("\nCreating normalized SAE model...")
+    # All models now use the same normalization approach
     sae_normalized = create_normalized_model(sae, max_per_feat)
+
     torch.save(sae_normalized.state_dict(), norm_sae_path)
     print(f"Normalized model saved to {norm_sae_path}")
 

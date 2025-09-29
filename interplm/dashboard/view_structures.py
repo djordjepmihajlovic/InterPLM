@@ -6,8 +6,10 @@ import numpy as np
 import py3Dmol
 import requests
 from Bio.PDB import PDBIO, PDBList, PDBParser
+from Bio.PDB.MMCIFParser import MMCIFParser
 
 from interplm.constants import PDB_DIR
+from interplm.dashboard.colors import default_cyan_to_magenta_colormap
 
 aa_3to1 = {
     "ALA": "A",
@@ -90,6 +92,42 @@ def get_single_chain_afdb_structure(uniprot_id: str):
     return structure[0]
 
 
+def get_structure_from_cif_file(cif_file_path: str, chain_id: str | None = None):
+    """
+    Parse a .cif file and return the structure.
+    
+    Args:
+        cif_file_path: Path to the .cif file
+        chain_id: Specific chain to extract. If None, returns the first chain.
+    
+    Returns:
+        Bio.PDB structure object
+    """
+    if not os.path.exists(cif_file_path):
+        raise FileNotFoundError(f"CIF file not found: {cif_file_path}")
+    
+    parser = MMCIFParser(QUIET=True)
+    structure = parser.get_structure("cif_structure", cif_file_path)
+    
+    # Get the first model (index 0)
+    model = structure[0]
+    
+    if chain_id is not None:
+        # Return specific chain
+        try:
+            return model[chain_id]
+        except KeyError:
+            available_chains = [chain.id for chain in model]
+            raise ValueError(f"Chain '{chain_id}' not found in CIF file. Available chains: {available_chains}")
+    else:
+        # Return the first chain
+        chains = list(model)
+        if chains:
+            return chains[0]
+        else:
+            raise ValueError("No chains found in the CIF file")
+
+
 def get_pdb_info_as_string_from_afdb(uniprot_id: str):
     # Define the file path for this specific PDB
     pdb_file_path = os.path.join(PDB_DIR, f"AF-{uniprot_id}-F1-model_v4.pdb")
@@ -134,33 +172,56 @@ def structure_to_seq(structure) -> str:
 
 
 def default_colormap_fn(value):
+    """Legacy default colormap function - kept for backwards compatibility."""
     if value > 0:
         return "magenta"
     else:
         return "cyan"
 
 
+
 def view_single_protein(
     pdb_id: str | None = None,
     chain_id: str | None = None,
     uniprot_id: str | None = None,
+    cif_file_path: str | None = None,
     values_to_color: List[float] | None = None,
-    colormap_fn: callable = default_colormap_fn,
-    default_color: str = "white",
+    colormap_fn: callable = default_cyan_to_magenta_colormap,
+    default_color: str = "lightgray",
     residues_to_highlight: List[int] | None = None,
     highlight_color: str = "magenta",
     pymol_params: Dict = {"width": 400, "height": 400},
 ) -> str:
     """
     Visualize a single protein structure with improved color assignment.
+    
+    Args:
+        pdb_id: PDB ID to download from PDB database
+        chain_id: Chain ID to extract (required if using pdb_id or cif_file_path)
+        uniprot_id: UniProt ID to download from AlphaFold database
+        cif_file_path: Path to local .cif file to load
+        values_to_color: List of values to color residues by
+        colormap_fn: Function to map values to colors
+        default_color: Default color for residues
+        residues_to_highlight: List of residue indices to highlight
+        highlight_color: Color for highlighted residues
+        pymol_params: Parameters for py3Dmol viewer
+    
+    Returns:
+        HTML string for protein visualization
     """
-    if uniprot_id is not None:
+    if cif_file_path is not None:
+        pdb_struct = get_structure_from_cif_file(cif_file_path, chain_id)
+        # If chain_id wasn't specified, get the chain id from the structure
+        if chain_id is None:
+            chain_id = pdb_struct.id
+    elif uniprot_id is not None:
         pdb_struct = get_single_chain_afdb_structure(uniprot_id)
         chain_id = "A"
     elif pdb_id is not None and chain_id is not None:
         pdb_struct = get_single_chain_pdb_structure(pdb_id, chain_id)
     else:
-        raise ValueError("Either pdb_id and chain_id or uniprot_id must be provided.")
+        raise ValueError("Either pdb_id and chain_id, uniprot_id, or cif_file_path must be provided.")
 
     pdb_data = structure_to_seq(pdb_struct)
     residues = pdb_struct.get_residues()
