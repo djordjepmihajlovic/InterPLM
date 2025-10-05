@@ -52,7 +52,7 @@ sae = load_sae_from_hf(plm_model="esm2-650m", plm_layer=24)
 Set the `INTERPLM_DATA` environment variable to establish the base directory for all data paths in this walkthrough (any downloaded .fasta files and ESM-2 embeddings created). If you don't want to use an environment variable, just replace `INTERPLM_DATA` with your path of choice throughout the walkthrough.
 ```bash
 # For zsh (replace with .bashrc or preferred shell)
-echo 'export INTERPLM_DATA="$HOME/your/preferred/path"' >> ~/.zshrc
+echo 'export INTERPLM_DATA="/Users/siddharthsetlur/Desktop/PhD/InterPLM/data"' >> ~/.zshrc
 source ~/.zshrc
 ```
 
@@ -99,7 +99,7 @@ python scripts/extract_embeddings.py \
     --embedder_type esm \
     --model_name facebook/esm2_t6_8M_UR50D \
     --layers $LAYER \
-    --batch_size 32
+    --batch_size 8
 ```
 
 > **Note:** The training script automatically uses the first 100 sequences from `eval_shards/shard_0.fasta` for fidelity evaluation.

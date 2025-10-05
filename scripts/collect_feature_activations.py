@@ -14,7 +14,7 @@ from typing import List, Optional
 import yaml
 import torch
 
-from interplm.sae.inference import load_sae
+from interplm.sae.inference import load_sae, load_sae_from_hf
 from interplm.analysis.per_protein_tracking import find_max_examples_per_feat
 from interplm.utils import get_device
 
@@ -66,7 +66,7 @@ def collect_feature_activations(
     # Load SAE (auto-detects architecture from config)
     device = get_device()
     print(f"Loading SAE on device: {device}")
-    sae = load_sae(sae_dir, device=device)
+    sae = load_sae_from_hf(plm_model="esm2-8m", plm_layer=4)
     print(f"SAE loaded: {sae.__class__.__name__} with {sae.dict_size} features, {sae.activation_dim}D embeddings")
     print()
 
