@@ -29,9 +29,10 @@ def load_esmfold_model(device: str):
     )
     model = EsmForProteinFolding.from_pretrained("facebook/esmfold_v1")
     model.float()
-    model = model.to(device)
+    # Always use CPU for ESMFold to avoid memory issues on limited GPU memory
+    # model = model.to("cpu")
     model.eval()
-    print("✓ ESMFold model loaded")
+    print("✓ ESMFold model loaded on CPU")
     return tokenizer, model
 
 
@@ -67,7 +68,7 @@ def find_max_examples_with_structures(
     aa_metadata_dir: Path,
     shards_to_search: List[int],
     feature_chunk_size: int = 200,
-    n_top_proteins_to_track: int = 10,
+    n_top_proteins_to_track: int = 8,
     lower_quantile_thresholds: List = None,
     activation_threshold: float = 0.05,
     save_protein_structure: bool = False,
@@ -237,7 +238,7 @@ class PerProteinActivationTrackerWithStructures(PerProteinActivationTracker):
                 if protein_info['sequence']:
                     try:
                         pdb_string = generate_pdb_structure(
-                            protein_info['sequence'], tokenizer, model, device
+                            protein_info['sequence'], tokenizer, model, "cpu"
                         )
                         self.protein_structures[protein_id]['pdb'] = pdb_string
                     except Exception as e:
