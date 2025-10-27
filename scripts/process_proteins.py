@@ -93,8 +93,6 @@ def main():
     
     # Load all protein IDs
     all_ids = proteins_to_compute(args.top_proteins)
-    with open(proteins_to_compute(args.top_proteins)) as f:
-        all_ids = [line.strip() for line in f if line.strip()]
     
     # Get this batch's IDs
     batch_ids = all_ids[args.start_idx:args.end_idx]
