@@ -28,8 +28,8 @@ python process_proteins.py \
     --top_proteins /exports/eddie/scratch/s2721407/InterPLM/models/walkthrough_model/layer_4/no_struc/Per_feature_max_example.yaml \
     --num_shards 8 \
     --metadata_dir /exports/eddie/scratch/s2721407/InterPLM/data/annotations/uniprotkb/processed \
-    --output_file results/batch_${BATCH_NUM}.yaml \
+    --output_file results/paralell/batch_${BATCH_NUM}.yaml \
     --start_idx $START \
     --end_idx $END
-    
+
 echo "Batch ${BATCH_NUM} complete!"
